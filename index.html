@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>DarkCall — звонки без лишнего</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="topbar" role="banner">
+    <div class="brand">DarkCall</div>
+    <div class="status" aria-live="polite">
+      <span id="statusDot" class="dot dot-idle" aria-hidden="true"></span>
+      <span id="statusText">Готов</span>
+    </div>
+    <button id="openSettingsBtn" class="icon-btn" aria-label="Настройки" title="Настройки">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+        <path d="M12 8a2 2 0 110-4 2 2 0 010 4zm0 8a2 2 0 110-4 2 2 0 010 4zm0 8a2 2 0 110-4 2 2 0 010 4z"/>
+      </svg>
+    </button>
+  </header>
+
+  <!-- Экран 1: до звонка -->
+  <main id="precall" class="precall" role="main">
+    <div class="card">
+      <h1>Чистые голосовые звонки</h1>
+      <p class="muted">Создай комнату или присоединись. Ссылка вида <code>?room=ABC123</code>.</p>
+
+      <label class="field">
+        <span>Код комнаты или ссылка</span>
+        <input id="roomIdInput" class="input" placeholder="Вставь код или ссылку">
+      </label>
+
+      <div class="row">
+        <button id="createBtn" class="btn primary">Создать звонок</button>
+        <button id="joinBtn" class="btn">Присоединиться</button>
+      </div>
+
+      <div class="row">
+        <button id="copyLinkBtn" class="btn ghost">Скопировать ссылку</button>
+      </div>
+
+      <div id="linkBox" class="link-box" hidden>
+        <span>Ссылка:</span>
+        <code id="roomLink"></code>
+      </div>
+    </div>
+  </main>
+
+  <!-- Экран 2: во время звонка -->
+  <section id="callScreen" class="call hidden" aria-label="Звонок">
+    <div class="center">
+      <div class="circle" id="pulseCircle" aria-hidden="true"></div>
+    </div>
+
+    <div class="call-time" id="callTime" aria-live="polite"></div>
+
+    <div class="controls">
+      <button id="muteBtn" class="ctrl" aria-pressed="false" aria-label="Выключить микрофон" disabled>
+        <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+          <path id="micPath" d="M12 14a3 3 0 003-3V6a3 3 0 10-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 0014 0h-2z"/>
+        </svg>
+      </button>
+
+      <button id="endBtn" class="ctrl danger" aria-label="Завершить" disabled>
+        <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+          <path d="M21 12a9 9 0 00-9-9 9 9 0 00-9 9h4a5 5 0 0110 0h4z"/>
+        </svg>
+      </button>
+
+      <button id="deafenBtn" class="ctrl" aria-pressed="false" aria-label="Отключить звук собеседника" disabled>
+        <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+          <path d="M3 9v6h4l5 5V4L7 9H3zM16.5 12a4.5 4.5 0 00-2.25-3.9v7.8A4.5 4.5 0 0016.5 12z"/>
+        </svg>
+      </button>
+    </div>
+
+    <audio id="remoteAudio" autoplay playsinline></audio>
+  </section>
+
+  <!-- Шторка настроек -->
+  <aside id="settings" class="sheet" aria-hidden="true" aria-label="Настройки">
+    <div class="sheet-header">
+      <div class="sheet-title">Настройки</div>
+      <button id="closeSettingsBtn" class="icon-btn" aria-label="Закрыть">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+          <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" fill="none"/>
+        </svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <label class="field">
+        <span>Микрофон</span>
+        <select id="micSelect" class="input"></select>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="echoCancellation" checked>
+        <span>Эхо‑подавление</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="noiseSuppression" checked>
+        <span>Шумоподавление</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="autoGainControl" checked>
+        <span>Авто‑усиление</span>
+      </label>
+    </div>
+  </aside>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
