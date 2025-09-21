@@ -57,7 +57,7 @@ body{
 .row{display:flex; gap:12px; flex-wrap:wrap; margin-top:8px}
 .btn{
   padding:12px 14px; border-radius:12px; border:1px solid var(--border);
-  background:#121212; color:var(--text); cursor:pointer;
+  background:#121212; color:#fff; cursor:pointer;
 }
 .btn.primary{background:#fff; color:#000; border-color:#fff}
 .btn.ghost{background:transparent}
@@ -86,7 +86,7 @@ body{
 }
 .call-time{ color:var(--muted); font-variant-numeric: tabular-nums; }
 .chip{
-  border:1px solid var(--border); background:#121212; color:var(--text);
+  border:1px solid var(--border); background:#121212; color:#fff;
   padding:6px 10px; border-radius:999px; font-size:14px;
 }
 
@@ -138,7 +138,7 @@ body{
 }
 .sheet-title{font-weight:600}
 .sheet-body{padding:8px 16px 16px 16px}
-.toggle{display:flex;align-items:center;gap:10px;margin-top:10px;color:var(--text)}
+.toggle{display:flex;align-items:center;gap:10px;margin-top:10px;color:#fff}
 .toggle input{width:18px;height:18px}
 
 @media (min-width:900px){

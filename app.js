@@ -205,7 +205,6 @@ function onConnected(){
   if(!connectedOnce){
     connectedOnce = true;
     startCallUI();
-    // «Начал звонок» — публикуем один раз, от имени того кто создал комнату
     if(role === 'caller'){ postSystem('call_started', { by: user.id }); }
   }
 }
@@ -239,8 +238,28 @@ async function createRoom(){
     const roomId = roomRef.id;
     const link = roomLinkFromId(roomId);
     showLink(link);
+
+    // === FIX 1: ждём answer от собеседника ===
+    onSnapshot(roomRef, async (snap) => {
+      const data = snap.data();
+      if(!pc.currentRemoteDescription && data?.answer){
+        const ans = new RTCSessionDescription(data.answer);
+        await pc.setRemoteDescription(ans);
+      }
+    });
+
+    // === FIX 2: принимаем ICE-кандидаты от callee ===
+    onSnapshot(calleeCandidatesCol, (snap) => {
+      snap.docChanges().forEach(async change => {
+        if(change.type === 'added'){
+          try{ await pc.addIceCandidate(change.doc.data()); }catch{}
+        }
+      });
+    });
+
   }catch(e){
     setStatus('error', 'Не удалось создать комнату');
+    console.error(e);
   }
 }
 
@@ -286,8 +305,18 @@ async function joinRoom(roomId){
     answer.sdp = tuneOpusInSDP(answer.sdp);
     await pc.setLocalDescription(answer);
     await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp }, answeredAt: serverTimestamp() });
+
+    // === FIX 3: слушаем ICE от caller ===
+    onSnapshot(callerCandidatesCol, (snap) => {
+      snap.docChanges().forEach(async change => {
+        if(change.type === 'added'){
+          try{ await pc.addIceCandidate(change.doc.data()); }catch{}
+        }
+      });
+    });
   }catch(e){
     setStatus('error', 'Не удалось подключиться');
+    console.error(e);
   }
 }
 
@@ -318,9 +347,7 @@ async function hangUp(){
     if(remoteStream){ remoteStream.getTracks().forEach(t => t.stop()); }
     if(roomRef){
       try{
-        // Не удаляем комнату полностью, чтобы чат/история сохранились
         await updateDoc(roomRef, { endedAt: serverTimestamp() });
-        // Можно подчистить кандидатов
         const cols = ['callerCandidates', 'calleeCandidates'];
         for(const c of cols){
           const colRef = collection(roomRef, c);
@@ -347,8 +374,9 @@ async function copyLink(){
 
 /** ===== Chat ===== */
 function subscribeMessages(){
-  if(messagesUnsub) messagesUnsub(); // пере-подписка безопасна
-  const q = query(messagesCol, orderBy('createdAt','asc'), limit(200));
+  if(!roomRef) return;
+  if(messagesUnsub) messagesUnsub();
+  const q = query(collection(roomRef, 'messages'), orderBy('createdAt','asc'), limit(200));
   messagesUnsub = onSnapshot(q, (snap) => {
     ui.messages.innerHTML = '';
     snap.forEach(doc => renderMessage(doc.data()));
@@ -357,17 +385,17 @@ function subscribeMessages(){
 }
 
 async function postSystem(kind, extra={}){
-  if(!messagesCol) return;
-  const payload = { type: 'system', kind, createdAt: serverTimestamp(), ...extra };
-  try{ await addDoc(messagesCol, payload); }catch{}
+  try{
+    await addDoc(collection(roomRef, 'messages'), { type: 'system', kind, createdAt: serverTimestamp(), ...extra });
+  }catch{}
 }
 
 async function sendText(){
   const text = ui.messageInput.value.trim();
-  if(!text || !messagesCol) return;
+  if(!text) return;
   ui.messageInput.value='';
   try{
-    await addDoc(messagesCol, {
+    await addDoc(collection(roomRef, 'messages'), {
       type: 'text',
       text,
       from: user.id,
@@ -425,6 +453,7 @@ async function init(){
     db = getFirestore(app);
   }catch(e){
     setStatus('error', 'Firebase не инициализирован');
+    console.error(e);
   }
 
   ui.createBtn.addEventListener('click', createRoom);
