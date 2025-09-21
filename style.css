@@ -72,13 +72,45 @@ body{
 }
 .center{display:flex;align-items:center;justify-content:center;flex:1;width:100%}
 .circle{
-  width:92px;height:92px;border-radius:50%;background:#f0f0f0; /* как на скрине — белый круг */
-  box-shadow:0 0 0 0 rgba(255,255,255,.08);
+  width:92px;height:92px;border-radius:50%;background:#f0f0f0;
+  box-shadow:0 0 0 0 rgba(255,255,255,.08); animation:pulse 2s ease-out infinite;
 }
-.call-time{
-  position:absolute; top:80px; left:0; right:0; text-align:center; color:var(--muted);
-  font-variant-numeric: tabular-nums;
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 rgba(255,255,255,.08)}
+  70%{box-shadow:0 0 0 24px rgba(255,255,255,0)}
+  100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}
 }
+
+.call-top{
+  position:absolute; top:70px; left:0; right:0; display:flex; justify-content:center; gap:12px; align-items:center;
+}
+.call-time{ color:var(--muted); font-variant-numeric: tabular-nums; }
+.chip{
+  border:1px solid var(--border); background:#121212; color:var(--text);
+  padding:6px 10px; border-radius:999px; font-size:14px;
+}
+
+.chat{
+  position:fixed; left:12px; right:12px; bottom: calc(90px + env(safe-area-inset-bottom));
+  background:rgba(16,16,16,.95); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow);
+  display:flex; flex-direction:column; gap:8px; padding:8px;
+  max-height:38vh;
+}
+.messages{ overflow:auto; padding:4px 4px; display:flex; flex-direction:column; gap:6px; }
+.msg-bubble{
+  max-width:80%; padding:8px 10px; border-radius:12px; border:1px solid var(--border); background:#141414;
+}
+.msg-right{ align-self:flex-end; background:#1a1a1a }
+.msg-meta{ color:var(--muted); font-size:12px; margin-top:2px }
+.msg-system{ align-self:center; color:#c9c9c9; font-size:13px; padding:2px 8px; opacity:.9 }
+
+.composer{ display:flex; gap:8px; }
+.input.msg{ flex:1 }
+.send{
+  padding:10px 12px; border-radius:10px; border:1px solid var(--border);
+  background:#fff; color:#000; cursor:pointer;
+}
+.send[disabled]{opacity:.6; cursor:not-allowed}
 
 .controls{
   position:fixed; bottom: max(16px, env(safe-area-inset-bottom)); left:0; right:0;
@@ -108,3 +140,7 @@ body{
 .sheet-body{padding:8px 16px 16px 16px}
 .toggle{display:flex;align-items:center;gap:10px;margin-top:10px;color:var(--text)}
 .toggle input{width:18px;height:18px}
+
+@media (min-width:900px){
+  .chat{ left:24px; right:auto; width:380px; }
+}

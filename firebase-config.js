@@ -1,9 +1,9 @@
 // Вставь сюда свой config из Firebase Console
 export const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyDPRtUzo9BRyUuwM9YIBgpEG2T0ZaJ4xWg",
+  authDomain: "darkcall-3c182.firebaseapp.com",
+  projectId: "darkcall-3c182",
+  storageBucket: "darkcall-3c182.firebasestorage.app",
+  messagingSenderId: "699999821908",
+  appId: "1:699999821908:web:4fc3d16b3d6acc1dea0dc1"
 };

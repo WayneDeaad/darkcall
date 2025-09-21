@@ -2,9 +2,20 @@ import { firebaseConfig } from './firebase-config.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {
   getFirestore, collection, doc, addDoc, setDoc, getDoc, updateDoc,
-  onSnapshot, serverTimestamp, deleteDoc, getDocs
+  onSnapshot, serverTimestamp, deleteDoc, getDocs, query, orderBy, limit
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+
+/** ===== Helpers ===== */
+function uid(){ try{ const a=new Uint32Array(2); crypto.getRandomValues(a); return (a[0].toString(36)+a[1].toString(36)).slice(0,8);}catch{ return Math.random().toString(36).slice(2,10);} }
+function formatTime(ts){
+  const d = ts instanceof Date ? ts : new Date(ts);
+  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+function formatDuration(sec){
+  const m = Math.floor(sec/60); const s = sec%60;
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
 
 /** ===== UI ===== */
 const ui = {
@@ -31,6 +42,11 @@ const ui = {
   endBtn: document.getElementById('endBtn'),
   deafenBtn: document.getElementById('deafenBtn'),
   remoteAudio: document.getElementById('remoteAudio'),
+  chat: document.getElementById('chat'),
+  chatToggle: document.getElementById('chatToggle'),
+  messages: document.getElementById('messages'),
+  messageInput: document.getElementById('messageInput'),
+  sendBtn: document.getElementById('sendBtn'),
 
   // sheet fields
   micSelect: document.getElementById('micSelect'),
@@ -41,9 +57,11 @@ const ui = {
 
 let app, db, auth;
 let pc, localStream, remoteStream, role = null;
-let roomRef, callerCandidatesCol, calleeCandidatesCol;
+let roomRef, callerCandidatesCol, calleeCandidatesCol, messagesCol, messagesUnsub = null;
 let callStartTs = 0, timerId = null;
 let isMuted = false, isDeaf = false;
+let connectedOnce = false;
+let user = { id: uid(), name: 'User-' + Math.random().toString(36).slice(2,6) };
 
 const rtcConfig = {
   iceServers: [
@@ -73,6 +91,9 @@ function setInCall(active){
   ui.muteBtn.disabled = !active;
   ui.endBtn.disabled = !active;
   ui.deafenBtn.disabled = !active;
+  ui.messageInput.disabled = !active;
+  ui.sendBtn.disabled = !active;
+  ui.chatToggle.setAttribute('aria-expanded', active ? 'true' : 'false');
 }
 
 function roomLinkFromId(id){
@@ -84,9 +105,7 @@ function roomLinkFromId(id){
 function updateCallTimer(){
   if(!callStartTs) return;
   const s = Math.floor((Date.now() - callStartTs)/1000);
-  const mm = String(Math.floor(s/60)).padStart(2,'0');
-  const ss = String(s%60).padStart(2,'0');
-  ui.callTime.textContent = mm + ':' + ss;
+  ui.callTime.textContent = formatDuration(s);
 }
 
 function getAudioConstraints(){
@@ -166,14 +185,29 @@ function createPeer(){
       remoteStream.addTrack(t);
     }
   };
+
   pc.onconnectionstatechange = () => {
     const st = pc.connectionState;
-    if(st === 'connected'){ setStatus('connected', 'Подключено'); }
-    else if(st === 'connecting'){ setStatus('connecting', 'Подключение…'); }
+    if(st === 'connected'){
+      onConnected();
+    }else if(st === 'connecting'){ setStatus('connecting', 'Подключение…'); }
     else if(st === 'failed'){ setStatus('error', 'Сбой соединения'); }
-    else if(st === 'disconnected'){ setStatus('idle', 'Отключено'); }
+    else if(st === 'disconnected'){
+      setStatus('idle', 'Отключено');
+      if(callStartTs){ postSystem('call_ended', { by: user.id, reason: 'disconnected', duration: Math.round((Date.now()-callStartTs)/1000) }); stopCallUI(); }
+    }
   };
   return pc;
+}
+
+function onConnected(){
+  setStatus('connected', 'Подключено');
+  if(!connectedOnce){
+    connectedOnce = true;
+    startCallUI();
+    // «Начал звонок» — публикуем один раз, от имени того кто создал комнату
+    if(role === 'caller'){ postSystem('call_started', { by: user.id }); }
+  }
 }
 
 async function createRoom(){
@@ -190,6 +224,8 @@ async function createRoom(){
     roomRef = await addDoc(collection(db, 'rooms'), { createdAt: serverTimestamp() });
     callerCandidatesCol = collection(roomRef, 'callerCandidates');
     calleeCandidatesCol = collection(roomRef, 'calleeCandidates');
+    messagesCol = collection(roomRef, 'messages');
+    subscribeMessages();
 
     pc.onicecandidate = async (event) => {
       if(event.candidate){ await addDoc(callerCandidatesCol, event.candidate.toJSON()); }
@@ -203,23 +239,6 @@ async function createRoom(){
     const roomId = roomRef.id;
     const link = roomLinkFromId(roomId);
     showLink(link);
-
-    onSnapshot(roomRef, async (snap) => {
-      const data = snap.data();
-      if(!pc.currentRemoteDescription && data?.answer){
-        const ans = new RTCSessionDescription(data.answer);
-        await pc.setRemoteDescription(ans);
-        startCallUI();
-      }
-    });
-
-    onSnapshot(collection(roomRef, 'calleeCandidates'), (snap) => {
-      snap.docChanges().forEach(async change => {
-        if(change.type === 'added'){
-          try{ await pc.addIceCandidate(change.doc.data()); }catch{}
-        }
-      });
-    });
   }catch(e){
     setStatus('error', 'Не удалось создать комнату');
   }
@@ -254,6 +273,8 @@ async function joinRoom(roomId){
 
     calleeCandidatesCol = collection(roomRef, 'calleeCandidates');
     callerCandidatesCol = collection(roomRef, 'callerCandidates');
+    messagesCol = collection(roomRef, 'messages');
+    subscribeMessages();
 
     pc.onicecandidate = async (event) => {
       if(event.candidate){ await addDoc(calleeCandidatesCol, event.candidate.toJSON()); }
@@ -265,15 +286,6 @@ async function joinRoom(roomId){
     answer.sdp = tuneOpusInSDP(answer.sdp);
     await pc.setLocalDescription(answer);
     await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp }, answeredAt: serverTimestamp() });
-    startCallUI();
-
-    onSnapshot(callerCandidatesCol, (snap) => {
-      snap.docChanges().forEach(async change => {
-        if(change.type === 'added'){
-          try{ await pc.addIceCandidate(change.doc.data()); }catch{}
-        }
-      });
-    });
   }catch(e){
     setStatus('error', 'Не удалось подключиться');
   }
@@ -291,11 +303,14 @@ function stopCallUI(){
   setInCall(false);
   ui.callTime.textContent = '';
   if(timerId) clearInterval(timerId);
-  callStartTs = 0;
+  callStartTs = 0; connectedOnce = false;
+  ui.chat.classList.add('hidden');
+  ui.chatToggle.setAttribute('aria-expanded','false');
 }
 
 async function hangUp(){
   try{
+    if(callStartTs){ postSystem('call_ended', { by: user.id, reason: 'hangup', duration: Math.round((Date.now()-callStartTs)/1000) }); }
     stopCallUI();
     setStatus('idle', 'Звонок завершён');
     if(pc){ pc.getSenders().forEach(s => s.track && s.track.stop()); pc.close(); }
@@ -303,17 +318,19 @@ async function hangUp(){
     if(remoteStream){ remoteStream.getTracks().forEach(t => t.stop()); }
     if(roomRef){
       try{
+        // Не удаляем комнату полностью, чтобы чат/история сохранились
+        await updateDoc(roomRef, { endedAt: serverTimestamp() });
+        // Можно подчистить кандидатов
         const cols = ['callerCandidates', 'calleeCandidates'];
         for(const c of cols){
           const colRef = collection(roomRef, c);
           const snaps = await getDocs(colRef);
           await Promise.all(snaps.docs.map(d => deleteDoc(d.ref)));
         }
-        await deleteDoc(roomRef);
       }catch{}
     }
   }finally{
-    pc=null; roomRef=null; role=null;
+    pc=null; role=null;
   }
 }
 
@@ -328,27 +345,69 @@ async function copyLink(){
   try{ await navigator.clipboard.writeText(link); }catch{}
 }
 
-async function toggleMute(){
-  isMuted = !isMuted;
-  if(localStream){
-    localStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
-  }
-  ui.muteBtn.setAttribute('aria-pressed', String(isMuted));
-  // Замена иконки (зачеркиваем микрофон)
-  const micPath = document.getElementById('micPath');
-  if(isMuted){
-    micPath.setAttribute('d','M19 11a7 7 0 01-7 7v3h-2v-3a7 7 0 01-6-7h2a5 5 0 0010 0h3zM12 14a3 3 0 003-3V6a3 3 0 10-6 0v1.59l7.7 7.7-1.4 1.42L10 9.41V11a3 3 0 003 3z');
-  }else{
-    micPath.setAttribute('d','M12 14a3 3 0 003-3V6a3 3 0 10-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 0014 0h-2z');
-  }
+/** ===== Chat ===== */
+function subscribeMessages(){
+  if(messagesUnsub) messagesUnsub(); // пере-подписка безопасна
+  const q = query(messagesCol, orderBy('createdAt','asc'), limit(200));
+  messagesUnsub = onSnapshot(q, (snap) => {
+    ui.messages.innerHTML = '';
+    snap.forEach(doc => renderMessage(doc.data()));
+    ui.messages.scrollTop = ui.messages.scrollHeight;
+  });
 }
 
-function toggleDeafen(){
-  isDeaf = !isDeaf;
-  ui.remoteAudio.muted = isDeaf;
-  ui.deafenBtn.setAttribute('aria-pressed', String(isDeaf));
+async function postSystem(kind, extra={}){
+  if(!messagesCol) return;
+  const payload = { type: 'system', kind, createdAt: serverTimestamp(), ...extra };
+  try{ await addDoc(messagesCol, payload); }catch{}
 }
 
+async function sendText(){
+  const text = ui.messageInput.value.trim();
+  if(!text || !messagesCol) return;
+  ui.messageInput.value='';
+  try{
+    await addDoc(messagesCol, {
+      type: 'text',
+      text,
+      from: user.id,
+      name: user.name,
+      createdAt: serverTimestamp()
+    });
+  }catch{}
+}
+
+function renderMessage(m){
+  if(m.type === 'system'){
+    let t = '';
+    if(m.kind === 'call_started'){ t = 'Звонок начался'; }
+    else if(m.kind === 'call_ended'){ t = 'Звонок завершён' + (m.duration ? ` (${formatDuration(m.duration)})` : ''); }
+    const div = document.createElement('div');
+    div.className = 'msg-system';
+    div.textContent = t;
+    ui.messages.appendChild(div);
+    return;
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-bubble ' + (m.from === user.id ? 'msg-right' : '');
+  wrap.textContent = m.text;
+  ui.messages.appendChild(wrap);
+  const meta = document.createElement('div');
+  meta.className = 'msg-meta';
+  const who = m.from === user.id ? 'Ты' : (m.name || 'Гость');
+  meta.textContent = `${who} • ${m.createdAt?.toDate ? formatTime(m.createdAt.toDate()) : ''}`;
+  ui.messages.appendChild(meta);
+  ui.messages.scrollTop = ui.messages.scrollHeight;
+}
+
+function toggleChat(){
+  const isHidden = ui.chat.classList.contains('hidden');
+  ui.chat.classList.toggle('hidden', !isHidden);
+  ui.chatToggle.setAttribute('aria-expanded', String(isHidden));
+  if(isHidden){ ui.messageInput.focus(); }
+}
+
+/** ===== Refresh audio track on settings changes ===== */
 async function refreshAudioTrack(){
   if(!pc) return;
   const newStream = await getLocalStream();
@@ -357,6 +416,7 @@ async function refreshAudioTrack(){
   if(sender && newTrack){ await sender.replaceTrack(newTrack); await tuneSender(sender); }
 }
 
+/** ===== Init ===== */
 async function init(){
   try{
     app = initializeApp(firebaseConfig);
@@ -377,6 +437,9 @@ async function init(){
   ui.closeSettingsBtn?.addEventListener('click', () => toggleSheet(false));
   ui.micSelect.addEventListener('change', refreshAudioTrack);
   [ui.echo, ui.noise, ui.agc].forEach(el => el.addEventListener('change', refreshAudioTrack));
+  ui.sendBtn.addEventListener('click', sendText);
+  ui.messageInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); sendText(); } });
+  ui.chatToggle.addEventListener('click', toggleChat);
 
   // Автоподключение по ?room=
   const params = new URLSearchParams(window.location.search);
@@ -385,6 +448,27 @@ async function init(){
 
   await prepareDevices();
   setStatus('idle', 'Готов');
+}
+
+/** ===== Controls ===== */
+async function toggleMute(){
+  isMuted = !isMuted;
+  if(localStream){
+    localStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
+  }
+  ui.muteBtn.setAttribute('aria-pressed', String(isMuted));
+  const micPath = document.getElementById('micPath');
+  if(isMuted){
+    micPath.setAttribute('d','M19 11a7 7 0 01-7 7v3h-2v-3a7 7 0 01-6-7h2a5 5 0 0010 0h3zM12 14a3 3 0 003-3V6a3 3 0 10-6 0v1.59l7.7 7.7-1.4 1.42L10 9.41V11a3 3 0 003 3z');
+  }else{
+    micPath.setAttribute('d','M12 14a3 3 0 003-3V6a3 3 0 10-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 0014 0h-2z');
+  }
+}
+
+function toggleDeafen(){
+  isDeaf = !isDeaf;
+  ui.remoteAudio.muted = isDeaf;
+  ui.deafenBtn.setAttribute('aria-pressed', String(isDeaf));
 }
 
 init();

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>DarkCall — звонки без лишнего</title>
+  <title>DarkCall — звонки + чат</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
@@ -20,7 +20,7 @@
     </button>
   </header>
 
-  <!-- Экран 1: до звонка -->
+  <!-- Экран: до звонка -->
   <main id="precall" class="precall" role="main">
     <div class="card">
       <h1>Чистые голосовые звонки</h1>
@@ -47,13 +47,25 @@
     </div>
   </main>
 
-  <!-- Экран 2: во время звонка -->
+  <!-- Экран: во время звонка -->
   <section id="callScreen" class="call hidden" aria-label="Звонок">
     <div class="center">
       <div class="circle" id="pulseCircle" aria-hidden="true"></div>
     </div>
 
-    <div class="call-time" id="callTime" aria-live="polite"></div>
+    <div class="call-top">
+      <div class="call-time" id="callTime" aria-live="polite"></div>
+      <button id="chatToggle" class="chip" aria-expanded="false">Чат</button>
+    </div>
+
+    <!-- Чат (можно скрывать/открывать) -->
+    <section id="chat" class="chat hidden" aria-label="Чат">
+      <div id="messages" class="messages" role="log" aria-live="polite"></div>
+      <div class="composer">
+        <input id="messageInput" class="input msg" placeholder="Сообщение..." disabled>
+        <button id="sendBtn" class="send" disabled>Отпр.</button>
+      </div>
+    </section>
 
     <div class="controls">
       <button id="muteBtn" class="ctrl" aria-pressed="false" aria-label="Выключить микрофон" disabled>
