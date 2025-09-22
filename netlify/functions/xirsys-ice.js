@@ -1,4 +1,4 @@
-// Netlify Function: прокси к Xirsys через Basic Auth header.
+// Netlify Function: прокси к Xirsys через Basic Auth.
 export async function handler(event, context) {
   const user = process.env.XIRSYS_USER || "DevDemon";
   const secret = process.env.XIRSYS_SECRET || "66d34f1a-97a5-11f0-a5dc-0242ac130002";
@@ -12,8 +12,9 @@ export async function handler(event, context) {
       body: JSON.stringify({ format:'urls' })
     });
     const text = await resp.text();
-    if(!resp.ok){
-      return { statusCode: resp.status, headers: {"access-control-allow-origin":"*"}, body: JSON.stringify({ error: 'Xirsys error', status: resp.status, body: text }) };
+    const status = resp.status;
+    if(status < 200 || status >= 300){
+      return { statusCode: status, headers: {"access-control-allow-origin":"*"}, body: JSON.stringify({ error: 'Xirsys error', status, body: text }) };
     }
     const data = JSON.parse(text);
     const iceServers = (data && (data.v?.iceServers || data.iceServers)) || [];

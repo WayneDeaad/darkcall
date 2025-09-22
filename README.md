@@ -1,23 +1,28 @@
-# DarkCall — PRO (Xirsys) — FIX 2
+# DarkCall — PRO (Xirsys) — FIX 3 + Polished UI
 
-Исправлено по твоим логам:
+### Что исправлено
+- **RTCPeerConnection(iceServers) — всегда массив.** Добавил нормализацию и защиту:
+  - Любой ответ Xirsys превращаем в массив `{ urls, username?, credential? }`.
+  - Если что-то не так — дефолт `[{ urls: ['stun:stun.l.google.com:19302'] }]`.
+- **Xirsys — Basic Auth в заголовке.** Никаких `user:pass@url`.
+- **Сигналинг:** гварды по состояниям, без `wrong state: stable`.
+- **Re-entrancy:** блокировка повторных create/join, отписка от всех `onSnapshot`.
+- **Watchdog и авто‑фоллбек на TURN** остаются: связь не «умирает».
 
-- ❌ `fetch(... with credentials in URL ...)` — браузер запретил.  
-  ✅ Теперь прямой запрос к Xirsys идёт через **`Authorization: Basic`** заголовок (как в твоём XHR‑примере).
-- ❌ 500 от Netlify Function.  
-  ✅ Функция теперь тоже шлёт **Basic** в заголовке и возвращает тело ошибки, если что — легче дебажить.
-- ❌ `Failed to set remote answer sdp: Called in wrong state: stable`  
-  ✅ Добавлены **гварды по `signalingState`**:  
-    - Caller применяет `answer` только когда `have-local-offer`.  
-    - Callee слушает новые `offer` только в `stable` (для ICE‑рестартов), и **после** первоначального ответа.
-- ✅ Убраны повторы создания/присоединения (guards), чистятся подписки (unsubscribe).
+### Улучшения дизайна
+- Чистый тёмный минимализм, аккуратные акценты (`--accent`, `--accent2`).
+- Улучшенные фокусы инпутов, плавные тени, аккуратные кнопки.
+- Тосты для статуса + панель ошибок.
 
-## Как пользоваться
-1. Замени файлы на Netlify содержимым архива.
-2. (Опционально) в Netlify → Environment добавь:
-   - `XIRSYS_USER=DevDemon`
-   - `XIRSYS_SECRET=66d34f1a-97a5-11f0-a5dc-0242ac130002`
-   - `XIRSYS_CHANNEL=MyFirstApp`
-   Тогда клиент возьмёт ICE через функцию и **не будет светить ключи** в браузере.
+### Как развернуть
+1. Залей содержимое архива на Netlify (поверх).  
+2. (Опционально) Включи Netlify Function и переменные окружения:
+   - `XIRSYS_USER`, `XIRSYS_SECRET`, `XIRSYS_CHANNEL`  
+   Тогда ключи не будут в исходнике, а ICE будут приходить через `/.netlify/functions/xirsys-ice`.
 
-Если всё равно упираешься в сети — включи «**Только TURN (relay)**». Авто‑фейловер и вотчдог тоже остаются на месте.
+### Где править
+- `xirsys-config.js` — твои креды Xirsys (для простоты сейчас они тут).  
+- `ice-provider.js` — логика получения/нормализации ICE.
+- `app.js` — WebRTC/Firestore/аудио/UX.
+
+Если снова что-то ругнётся в консоли — скинь точный текст, поправлю точечно.

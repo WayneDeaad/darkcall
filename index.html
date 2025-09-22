@@ -3,79 +3,149 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>DarkCall — PRO (Xirsys, fix2)</title>
+  <title>DarkCall — PRO</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">DarkCall</div>
-    <div class="status">
-      <span id="statusDot" class="dot dot-idle"></span>
+  <header class="topbar" role="banner">
+    <div class="brand">
+      <span class="dot-mini" id="dotMini"></span>
+      DarkCall
+    </div>
+    <div class="status" aria-live="polite">
       <span id="statusText">Готов</span>
     </div>
     <div class="right">
-      <button id="chatToggle" class="chip" aria-expanded="false">Чат</button>
+      <button id="chatToggle" class="chip" aria-expanded="false" title="Чат">Чат</button>
       <button id="openSettingsBtn" class="icon-btn" aria-label="Настройки" title="Настройки">
-        <svg viewBox="0 0 24 24" width="24" height="24"><path d="M12 8a2 2 0 110-4 2 2 0 010 4zm0 8a2 2 0 110-4 2 2 0 010 4zm0 8a2 2 0 110-4 2 2 0 010 4z"/></svg>
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path d="M12 8a2 2 0 110-4 2 2 0 010 4zm0 8a2 2 0 110-4 2 2 0 010 4zm0 8a2 2 0 110-4 2 2 0 010 4z"/>
+        </svg>
       </button>
     </div>
   </header>
 
-  <main id="precall" class="precall">
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- Экран: до звонка -->
+  <main id="precall" class="precall" role="main">
     <div class="card">
-      <h1>Чистые голосовые звонки</h1>
+      <h1>Чистые звонки по ссылке</h1>
       <p class="muted">Создай комнату или присоединись. Ссылка вида <code>?room=ABC123</code>.</p>
-      <label class="field"><span>Код комнаты или ссылка</span><input id="roomIdInput" class="input" placeholder="Вставь код или ссылку"></label>
+
+      <label class="field">
+        <span>Код комнаты или ссылка</span>
+        <input id="roomIdInput" class="input" placeholder="Вставь код или ссылку">
+      </label>
+
       <div class="row">
         <button id="createBtn" class="btn primary">Создать звонок</button>
         <button id="joinBtn" class="btn">Присоединиться</button>
       </div>
-      <div class="row"><button id="copyLinkBtn" class="btn ghost">Скопировать ссылку</button></div>
-      <div id="linkBox" class="link-box" hidden><span>Ссылка:</span> <code id="roomLink"></code></div>
 
-      <div class="hint">
+      <div class="row">
+        <button id="copyLinkBtn" class="btn ghost">Скопировать ссылку</button>
         <label class="toggle"><input type="checkbox" id="forceTurn"><span>Только TURN (relay)</span></label>
-        <p class="muted small">Если долго «Подключение…», включи «Только TURN». Иначе авто‑фоллбек сам переключится.</p>
       </div>
+
+      <div id="linkBox" class="link-box" hidden>
+        <span>Ссылка:</span>
+        <code id="roomLink"></code>
+      </div>
+
+      <div id="errorBox" class="error-box" hidden></div>
     </div>
   </main>
 
+  <!-- Экран: звонок -->
   <section id="callScreen" class="call hidden" aria-label="Звонок">
-    <div class="center"><div class="circle" id="pulseCircle"></div></div>
-    <div class="call-top"><div class="call-time" id="callTime"></div></div>
+    <div class="center">
+      <div class="circle" id="pulseCircle" aria-hidden="true"></div>
+    </div>
 
-    <section id="chat" class="chat hidden">
+    <div class="call-top">
+      <div class="call-time" id="callTime" aria-live="polite"></div>
+    </div>
+
+    <!-- Чат -->
+    <section id="chat" class="chat hidden" aria-label="Чат">
       <div id="messages" class="messages" role="log" aria-live="polite"></div>
-      <div class="composer"><input id="messageInput" class="input msg" placeholder="Сообщение..." disabled><button id="sendBtn" class="send" disabled>Отпр.</button></div>
+      <div class="composer">
+        <input id="messageInput" class="input msg" placeholder="Сообщение..." disabled>
+        <button id="sendBtn" class="send" disabled>Отпр.</button>
+      </div>
     </section>
 
     <div class="controls">
-      <button id="muteBtn" class="ctrl" disabled aria-pressed="false"><svg viewBox="0 0 24 24" width="28" height="28"><path id="micPath" d="M12 14a3 3 0 003-3V6a3 3 0 10-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 0014 0h-2z"/></svg></button>
-      <button id="endBtn" class="ctrl danger" disabled><svg viewBox="0 0 24 24" width="28" height="28"><path d="M21 12a9 9 0 00-9-9 9 9 0 00-9 9h4a5 5 0 0110 0h4z"/></svg></button>
-      <button id="deafenBtn" class="ctrl" disabled aria-pressed="false"><svg viewBox="0 0 24 24" width="28" height="28"><path d="M3 9v6h4l5 5V4L7 9H3zM16.5 12a4.5 4.5 0 00-2.25-3.9v7.8A4.5 4.5 0 0016.5 12z"/></svg></button>
+      <button id="muteBtn" class="ctrl" aria-pressed="false" aria-label="Выключить микрофон" disabled>
+        <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+          <path id="micPath" d="M12 14a3 3 0 003-3V6a3 3 0 10-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 0014 0h-2z"/>
+        </svg>
+      </button>
+
+      <button id="endBtn" class="ctrl danger" aria-label="Завершить" disabled>
+        <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+          <path d="M21 12a9 9 0 00-9-9 9 9 0 00-9 9h4a5 5 0 0110 0h4z"/>
+        </svg>
+      </button>
+
+      <button id="deafenBtn" class="ctrl" aria-pressed="false" aria-label="Отключить звук собеседника" disabled>
+        <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+          <path d="M3 9v6h4l5 5V4L7 9H3zM16.5 12a4.5 4.5 0 00-2.25-3.9v7.8A4.5 4.5 0 0016.5 12z"/>
+        </svg>
+      </button>
     </div>
 
     <audio id="remoteAudio" autoplay playsinline></audio>
   </section>
 
-  <aside id="settings" class="sheet" aria-hidden="true">
+  <!-- Шторка настроек -->
+  <aside id="settings" class="sheet" aria-hidden="true" aria-label="Настройки">
     <div class="sheet-header">
       <div class="sheet-title">Настройки</div>
-      <button id="closeSettingsBtn" class="icon-btn" aria-label="Закрыть"><svg viewBox="0 0 24 24" width="24" height="24"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" fill="none"/></svg></button>
+      <button id="closeSettingsBtn" class="icon-btn" aria-label="Закрыть">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" fill="none"/>
+        </svg>
+      </button>
     </div>
     <div class="sheet-body">
       <div class="grid2">
-        <label class="field"><span>Микрофон</span><select id="micSelect" class="input"></select></label>
-        <label class="field" id="outWrap"><span>Вывод звука</span><select id="outSelect" class="input"></select></label>
+        <label class="field">
+          <span>Микрофон</span>
+          <select id="micSelect" class="input"></select>
+        </label>
+        <label class="field" id="outWrap">
+          <span>Вывод звука</span>
+          <select id="outSelect" class="input"></select>
+        </label>
       </div>
+
       <div class="grid2">
-        <label class="field"><span>Чувствительность микрофона</span><input type="range" id="micGain" min="0" max="3" step="0.01" value="1"></label>
-        <label class="field"><span>Громкость вывода</span><input type="range" id="outGain" min="0" max="1.5" step="0.01" value="1"></label>
+        <label class="field">
+          <span>Чувствительность микрофона</span>
+          <input type="range" id="micGain" min="0" max="3" step="0.01" value="1">
+        </label>
+        <label class="field">
+          <span>Громкость вывода</span>
+          <input type="range" id="outGain" min="0" max="1.5" step="0.01" value="1">
+        </label>
       </div>
+
       <div class="grid2">
-        <label class="field"><span>Шумовой порог (noise gate)</span><input type="range" id="gate" min="0" max="1" step="0.01" value="0"></label>
-        <label class="field"><span>Режим</span><select id="modeSelect" class="input"><option value="voice" selected>Голос (96 kbps)</option><option value="music">Музыка (128 kbps)</option></select></label>
+        <label class="field">
+          <span>Шумовой порог (noise gate)</span>
+          <input type="range" id="gate" min="0" max="1" step="0.01" value="0">
+        </label>
+        <label class="field">
+          <span>Режим</span>
+          <select id="modeSelect" class="input">
+            <option value="voice" selected>Голос (96 kbps)</option>
+            <option value="music">Музыка (128 kbps)</option>
+          </select>
+        </label>
       </div>
+
       <div class="row wrap">
         <label class="toggle"><input type="checkbox" id="echoCancellation" checked><span>Эхо‑подавление</span></label>
         <label class="toggle"><input type="checkbox" id="noiseSuppression" checked><span>Шумоподавление</span></label>
