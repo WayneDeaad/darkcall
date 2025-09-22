@@ -28,7 +28,7 @@ const ui={
 };
 
 let app,db,auth;
-let pc, role=null, usingRelay=restore('forceRelay',false);
+let pc, role=null;
 let roomRef, callerCandCol, calleeCandCol, msgUnsub=null, roomUnsub=null, callerIceUnsub=null, calleeIceUnsub=null;
 let callStartTs=0, timerId=null, isMuted=false, isDeaf=false, connectedOnce=false;
 let user={id:uid(), name:'User-'+Math.random().toString(36).slice(2,6)};
@@ -36,7 +36,7 @@ let creating=false, joining=false;
 
 const state = {
   iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
-  icePolicy: 'all', // 'all' | 'relay'
+  icePolicy: restore('forceRelay', false) ? 'relay' : 'all', // 'all' | 'relay'
   watchdog: null,
   lastBytesIn: 0,
   lastBytesTime: 0,
@@ -78,9 +78,7 @@ function tuneOpus(sdp){
   return m.join('\r\n');
 }
 
-function rtcConfig(){
-  return { iceServers: state.iceServers, iceCandidatePoolSize: 10, iceTransportPolicy: state.icePolicy };
-}
+function rtcConfig(){ return { iceServers: state.iceServers, iceCandidatePoolSize: 10, iceTransportPolicy: state.icePolicy }; }
 
 function cleanupSubs(){
   try{ roomUnsub && roomUnsub(); }catch{} roomUnsub=null;
@@ -171,11 +169,12 @@ let currentOfferSdp='', currentAnswerSdp='';
 async function createRoom(){
   if(creating) return;
   creating=true; ui.createBtn.disabled=true; ui.joinBtn.disabled=true;
+  cleanupSubs();
   try{
     role='caller';
-    usingRelay = ui.forceTurn.checked || ui.forceTurnSheet.checked;
-    state.icePolicy = usingRelay ? 'relay' : 'all';
-    persist('forceRelay', usingRelay);
+    const force = ui.forceTurn.checked || ui.forceTurnSheet?.checked;
+    state.icePolicy = force ? 'relay' : 'all';
+    persist('forceRelay', force);
     setStatus('connecting','Создаём комнату…');
 
     // ICE из Xirsys
@@ -195,7 +194,11 @@ async function createRoom(){
 
     roomUnsub = onSnapshot(roomRef, async (snap)=>{
       const data=snap.data(); const ans=data?.answer;
-      if(ans && ans.sdp !== currentAnswerSdp){ currentAnswerSdp=ans.sdp; await pc.setRemoteDescription(new RTCSessionDescription(ans)); }
+      // Принимаем answer только когда реально его ждём
+      if(ans && ans.sdp !== currentAnswerSdp && pc.signalingState === 'have-local-offer' && !pc.currentRemoteDescription){
+        currentAnswerSdp=ans.sdp;
+        await pc.setRemoteDescription(new RTCSessionDescription(ans));
+      }
     });
     calleeIceUnsub = onSnapshot(collection(roomRef,'calleeCandidates'), (snap)=>{ snap.docChanges().forEach(async ch=>{ if(ch.type==='added'){ try{ await pc.addIceCandidate(ch.doc.data()); }catch{} } }); });
 
@@ -212,7 +215,7 @@ async function joinByInput(){
   joining=true; ui.createBtn.disabled=true; ui.joinBtn.disabled=true;
   try{
     let v=(ui.roomInput.value||'').trim();
-    if(!v){ joining=false; ui.createBtn.disabled=false; ui.joinBtn.disabled=false; return; }
+    if(!v){ return; }
     try{ if(v.startsWith('http')){ const u=new URL(v); v=u.searchParams.get('room')||v; } }catch{}
     await joinRoom(v);
   }finally{
@@ -223,25 +226,41 @@ async function joinByInput(){
 async function joinRoom(roomId){
   cleanupSubs();
   role='callee';
-  usingRelay = ui.forceTurn.checked || ui.forceTurnSheet.checked;
-  state.icePolicy = usingRelay ? 'relay' : 'all';
-  persist('forceRelay', usingRelay);
+  const force = ui.forceTurn.checked || ui.forceTurnSheet?.checked;
+  state.icePolicy = force ? 'relay' : 'all';
+  persist('forceRelay', force);
   setStatus('connecting','Подключаемся…');
 
+  // ICE из Xirsys
   state.iceServers = await getIceServers();
 
   await buildAudio(); createPeer();
   const track=outStream().getAudioTracks()[0];
   pc.addTrack(track, outStream());
   roomRef = doc(db,'rooms',roomId);
-  const snap=await getDoc(roomRef); if(!snap.exists()){ setStatus('error','Комната не найдена'); return; }
+  const firstSnap=await getDoc(roomRef); if(!firstSnap.exists()){ setStatus('error','Комната не найдена'); return; }
+  const off=firstSnap.data().offer;
+  if(!off){ setStatus('error','Нет оффера'); return; }
+  currentOfferSdp = off.sdp;
+  await pc.setRemoteDescription(new RTCSessionDescription(off));
+  let ans=await pc.createAnswer();
+  ans.sdp=tuneOpus(ans.sdp);
+  await pc.setLocalDescription(ans);
+  await updateDoc(roomRef,{ answer:{type:ans.type,sdp:ans.sdp, ts: Date.now()} });
+
   calleeCandCol = collection(roomRef,'calleeCandidates'); callerCandCol = collection(roomRef,'callerCandidates'); msgCol = collection(roomRef,'messages'); subMessages();
   pc.onicecandidate=async(ev)=>{ if(ev.candidate){ await addDoc(calleeCandCol, ev.candidate.toJSON()); } };
 
+  // Слушаем обновления offer только для ICE‑рестартов, когда мы в 'stable'
   roomUnsub = onSnapshot(roomRef, async (rsnap)=>{
-    const data=rsnap.data(); const off=data?.offer; if(off && off.sdp !== currentOfferSdp){
-      currentOfferSdp=off.sdp; await pc.setRemoteDescription(new RTCSessionDescription(off)); let ans=await pc.createAnswer(); ans.sdp=tuneOpus(ans.sdp); await pc.setLocalDescription(ans); await updateDoc(roomRef,{ answer:{type:ans.type,sdp:ans.sdp, ts: Date.now()} });
-    }
+    const data=rsnap.data(); const newOff=data?.offer;
+    if(!newOff || newOff.sdp === currentOfferSdp) return;
+    if(pc.signalingState !== 'stable') return; // ждём стабильности
+    currentOfferSdp=newOff.sdp;
+    await pc.setRemoteDescription(new RTCSessionDescription(newOff));
+    let newAns=await pc.createAnswer(); newAns.sdp=tuneOpus(newAns.sdp);
+    await pc.setLocalDescription(newAns);
+    await updateDoc(roomRef,{ answer:{type:newAns.type,sdp:newAns.sdp, ts: Date.now()} });
   });
   callerIceUnsub = onSnapshot(callerCandCol, (snap)=>{ snap.docChanges().forEach(async ch=>{ if(ch.type==='added'){ try{ await pc.addIceCandidate(ch.doc.data()); }catch{} } }); });
 
@@ -252,7 +271,23 @@ function startCallUI(){ setInCall(true); callStartTs=Date.now(); if(timerId) cle
 function stopCallUI(){ setInCall(false); ui.callTime.textContent=''; if(timerId) clearInterval(timerId); callStartTs=0; connectedOnce=false; ui.chat.classList.add('hidden'); ui.chatToggle.setAttribute('aria-expanded','false'); stopWatchdog(); }
 
 async function hangUp(){
-  try{ if(callStartTs){ await postSys('call_ended',{duration:Math.round((Date.now()-callStartTs)/1000)}); } stopCallUI(); setStatus('idle','Звонок завершён'); if(pc){ pc.getSenders().forEach(s=>s.track&&s.track.stop()); pc.close(); } cleanupSubs(); if(roomRef){ try{ await updateDoc(roomRef,{endedAt:serverTimestamp()}); const cols=['callerCandidates','calleeCandidates']; for(const c of cols){ const col=collection(roomRef,c); const sn=await getDocs(col); await Promise.all(sn.docs.map(d=>deleteDoc(d.ref))); } }catch{} } } finally{ pc=null; role=null; }
+  try{
+    if(callStartTs){ await postSys('call_ended',{duration:Math.round((Date.now()-callStartTs)/1000)}); }
+    stopCallUI(); setStatus('idle','Звонок завершён');
+    if(pc){ pc.getSenders().forEach(s=>s.track&&s.track.stop()); pc.close(); }
+    cleanupSubs();
+    if(roomRef){
+      try{
+        await updateDoc(roomRef,{endedAt:serverTimestamp()});
+        const cols=['callerCandidates','calleeCandidates'];
+        for(const c of cols){
+          const col=collection(roomRef,c);
+          const sn=await getDocs(col);
+          await Promise.all(sn.docs.map(d=>deleteDoc(d.ref)));
+        }
+      }catch{}
+    }
+  }finally{ pc=null; role=null; }
 }
 
 function showLink(id){ ui.linkBox.hidden=false; ui.roomLink.textContent=roomLinkFromId(id); }
@@ -279,12 +314,12 @@ async function init(){
   ui.muteBtn.addEventListener('click',()=>{ isMuted=!isMuted; const s=outStream(); if(s){ s.getAudioTracks().forEach(t=>t.enabled=!isMuted);} ui.muteBtn.setAttribute('aria-pressed',String(isMuted)); });
   ui.deafenBtn.addEventListener('click',()=>{ isDeaf=!isDeaf; ui.remoteAudio.muted=isDeaf; ui.deafenBtn.setAttribute('aria-pressed',String(isDeaf)); });
   ui.endBtn.addEventListener('click',hangUp);
-  ui.micGain.addEventListener('input',()=>{ const v=parseFloat(ui.micGain.value); persist('micGain',v); /* пересоберём при следующем вызове buildAudio */ });
+  ui.micGain.addEventListener('input',()=>{ const v=parseFloat(ui.micGain.value); persist('micGain',v); });
   ui.outGain.addEventListener('input',()=>{ const v=parseFloat(ui.outGain.value); ui.remoteAudio.volume=v; persist('outGain',v); });
-  ui.gate.addEventListener('input',()=>{ persist('gate', parseFloat(ui.gate.value)); /* пересоберём при следующем звонке */ });
-  ui.forceTurn.checked = usingRelay; ui.forceTurnSheet.checked = usingRelay;
-  ui.forceTurn.addEventListener('change',()=>{ usingRelay=ui.forceTurn.checked; ui.forceTurnSheet.checked=usingRelay; state.icePolicy=usingRelay?'relay':'all'; persist('forceRelay',usingRelay); });
-  ui.forceTurnSheet.addEventListener('change',()=>{ usingRelay=ui.forceTurnSheet.checked; ui.forceTurn.checked=usingRelay; state.icePolicy=usingRelay?'relay':'all'; persist('forceRelay',usingRelay); });
+  ui.gate.addEventListener('input',()=>{ persist('gate', parseFloat(ui.gate.value)); });
+  const savedRelay = restore('forceRelay', false); ui.forceTurn.checked = savedRelay; if(ui.forceTurnSheet) ui.forceTurnSheet.checked = savedRelay;
+  ui.forceTurn.addEventListener('change',()=>{ const flag=ui.forceTurn.checked; if(ui.forceTurnSheet) ui.forceTurnSheet.checked=flag; persist('forceRelay',flag); });
+  if(ui.forceTurnSheet){ ui.forceTurnSheet.addEventListener('change',()=>{ const flag=ui.forceTurnSheet.checked; ui.forceTurn.checked=flag; persist('forceRelay',flag); }); }
 
   // auto join by ?room=
   const params=new URLSearchParams(location.search); const room=params.get('room'); await prepareDevices(); await buildAudio();

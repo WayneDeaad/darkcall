@@ -1,20 +1,23 @@
-# DarkCall — PRO (Xirsys + авто‑фейловер) — FIX 1
+# DarkCall — PRO (Xirsys) — FIX 2
 
-Исправления по твоим ошибкам:
+Исправлено по твоим логам:
 
-1) **TypeError: destStream.getAudioTracks is not a function**  
-   Теперь мы используем правильный объект: `MediaStreamAudioDestinationNode.stream`  
-   (т. е. берём трек как `destNode.stream.getAudioTracks()[0]`).
+- ❌ `fetch(... with credentials in URL ...)` — браузер запретил.  
+  ✅ Теперь прямой запрос к Xirsys идёт через **`Authorization: Basic`** заголовок (как в твоём XHR‑примере).
+- ❌ 500 от Netlify Function.  
+  ✅ Функция теперь тоже шлёт **Basic** в заголовке и возвращает тело ошибки, если что — легче дебажить.
+- ❌ `Failed to set remote answer sdp: Called in wrong state: stable`  
+  ✅ Добавлены **гварды по `signalingState`**:  
+    - Caller применяет `answer` только когда `have-local-offer`.  
+    - Callee слушает новые `offer` только в `stable` (для ICE‑рестартов), и **после** первоначального ответа.
+- ✅ Убраны повторы создания/присоединения (guards), чистятся подписки (unsubscribe).
 
-2) **Бесконечно создаётся комната**  
-   Добавлены **гварды** и отключение кнопок на время операции (`creating/joining`) + чистка подписок.
+## Как пользоваться
+1. Замени файлы на Netlify содержимым архива.
+2. (Опционально) в Netlify → Environment добавь:
+   - `XIRSYS_USER=DevDemon`
+   - `XIRSYS_SECRET=66d34f1a-97a5-11f0-a5dc-0242ac130002`
+   - `XIRSYS_CHANNEL=MyFirstApp`
+   Тогда клиент возьмёт ICE через функцию и **не будет светить ключи** в браузере.
 
-3) **500 от /.netlify/functions/xirsys-ice**  
-   Чтобы не засорять консоль, теперь **сначала идёт прямой запрос** к Xirsys (как в твоём cURL), и только если он упадёт — пробуем Netlify Function. В итоге даже без функций всё работает.
-
-4) Стабильность  
-   - Акуратные `unsubscribe` при завершении звонка.  
-   - Watchdog и авто‑фоллбек остались.
-
-Разворачивай поверх текущего деплоя.
-
+Если всё равно упираешься в сети — включи «**Только TURN (relay)**». Авто‑фейловер и вотчдог тоже остаются на месте.
