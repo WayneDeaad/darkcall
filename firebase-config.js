@@ -1,4 +1,4 @@
-// Firebase config (публичные ключи — это нормально для клиента)
+// Firebase client config
 export const firebaseConfig = {
   apiKey: "AIzaSyDPRtUzo9BRyUuwM9YIBgpEG2T0ZaJ4xWg",
   authDomain: "darkcall-3c182.firebaseapp.com",

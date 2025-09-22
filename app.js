@@ -1,503 +1,274 @@
 import { firebaseConfig } from './firebase-config.js';
+import { getIceServers } from './ice-provider.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-import {
-  getFirestore, collection, doc, addDoc, setDoc, getDoc, updateDoc,
-  onSnapshot, serverTimestamp, deleteDoc, getDocs, query, orderBy, limit
-} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import { getFirestore, collection, doc, addDoc, setDoc, getDoc, updateDoc,
+  onSnapshot, serverTimestamp, deleteDoc, getDocs, query, orderBy, limit } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 
-/** ===== Helpers ===== */
-function uid(){ try{ const a=new Uint32Array(2); crypto.getRandomValues(a); return (a[0].toString(36)+a[1].toString(36)).slice(0,8);}catch{ return Math.random().toString(36).slice(2,10);} }
-function formatTime(ts){
-  const d = ts instanceof Date ? ts : new Date(ts);
-  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-}
-function formatDuration(sec){
-  const m = Math.floor(sec/60); const s = sec%60;
-  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-}
+/** ==== helpers & UI ==== */
+const persist=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
+const restore=(k,f)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):f}catch{return f}};
+const uid=()=>{try{const a=new Uint32Array(2);crypto.getRandomValues(a);return(a[0].toString(36)+a[1].toString(36)).slice(0,8)}catch{return Math.random().toString(36).slice(2,10)}};
+const fmtDur=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
 
-/** ===== UI ===== */
-const ui = {
-  statusDot: document.getElementById('statusDot'),
-  statusText: document.getElementById('statusText'),
-  openSettingsBtn: document.getElementById('openSettingsBtn'),
-  closeSettingsBtn: document.getElementById('closeSettingsBtn'),
-  settings: document.getElementById('settings'),
-
-  // precall
-  precall: document.getElementById('precall'),
-  roomInput: document.getElementById('roomIdInput'),
-  createBtn: document.getElementById('createBtn'),
-  joinBtn: document.getElementById('joinBtn'),
-  copyLinkBtn: document.getElementById('copyLinkBtn'),
-  linkBox: document.getElementById('linkBox'),
-  roomLink: document.getElementById('roomLink'),
-
-  // call
-  call: document.getElementById('callScreen'),
-  callTime: document.getElementById('callTime'),
-  pulse: document.getElementById('pulseCircle'),
-  muteBtn: document.getElementById('muteBtn'),
-  endBtn: document.getElementById('endBtn'),
-  deafenBtn: document.getElementById('deafenBtn'),
-  remoteAudio: document.getElementById('remoteAudio'),
-  chat: document.getElementById('chat'),
-  chatToggle: document.getElementById('chatToggle'),
-  messages: document.getElementById('messages'),
-  messageInput: document.getElementById('messageInput'),
-  sendBtn: document.getElementById('sendBtn'),
-
-  // sheet fields
-  micSelect: document.getElementById('micSelect'),
-  echo: document.getElementById('echoCancellation'),
-  noise: document.getElementById('noiseSuppression'),
-  agc: document.getElementById('autoGainControl'),
+const ui={
+  statusDot:document.getElementById('statusDot'),statusText:document.getElementById('statusText'),
+  precall:document.getElementById('precall'),call:document.getElementById('callScreen'),
+  roomInput:document.getElementById('roomIdInput'),createBtn:document.getElementById('createBtn'),joinBtn:document.getElementById('joinBtn'),
+  copyBtn:document.getElementById('copyLinkBtn'),linkBox:document.getElementById('linkBox'),roomLink:document.getElementById('roomLink'),
+  muteBtn:document.getElementById('muteBtn'),endBtn:document.getElementById('endBtn'),deafenBtn:document.getElementById('deafenBtn'),
+  remoteAudio:document.getElementById('remoteAudio'),chat:document.getElementById('chat'),chatToggle:document.getElementById('chatToggle'),
+  messages:document.getElementById('messages'),messageInput:document.getElementById('messageInput'),sendBtn:document.getElementById('sendBtn'),
+  callTime:document.getElementById('callTime'),pulse:document.getElementById('pulseCircle'),
+  openSettingsBtn:document.getElementById('openSettingsBtn'),closeSettingsBtn:document.getElementById('closeSettingsBtn'),settings:document.getElementById('settings'),
+  micSelect:document.getElementById('micSelect'),outSelect:document.getElementById('outSelect'),outWrap:document.getElementById('outWrap'),
+  micGain:document.getElementById('micGain'),outGain:document.getElementById('outGain'),gate:document.getElementById('gate'),
+  modeSelect:document.getElementById('modeSelect'),echo:document.getElementById('echoCancellation'),noise:document.getElementById('noiseSuppression'),
+  agc:document.getElementById('autoGainControl'),forceTurn:document.getElementById('forceTurn'),forceTurnSheet:document.getElementById('forceTurnSheet')
 };
 
-let app, db, auth;
-let pc, localStream, remoteStream, role = null;
-let roomRef, callerCandidatesCol, calleeCandidatesCol, messagesCol, messagesUnsub = null;
-let callStartTs = 0, timerId = null;
-let isMuted = false, isDeaf = false;
-let connectedOnce = false;
-let user = { id: uid(), name: 'User-' + Math.random().toString(36).slice(2,6) };
+let app,db,auth;
+let pc, role=null, usingRelay=restore('forceRelay',false);
+let roomRef, callerCandCol, calleeCandCol, msgUnsub=null;
+let callStartTs=0, timerId=null, isMuted=false, isDeaf=false, connectedOnce=false;
+let user={id:uid(), name:'User-'+Math.random().toString(36).slice(2,6)};
 
-const rtcConfig = {
-  iceServers: [
-    { urls: ['stun:stun.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] },
-    // Добавь свой TURN для 100% связности:
-    // { urls: 'turn:YOUR_TURN:3478', username: 'USER', credential: 'PASS' },
-    // { urls: 'turns:YOUR_TURN:5349?transport=tcp', username: 'USER', credential: 'PASS' },
-  ],
-  iceCandidatePoolSize: 10,
+const state = {
+  iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
+  icePolicy: 'all', // 'all' | 'relay'
+  watchdog: null,
+  lastBytesIn: 0,
+  lastBytesTime: 0,
 };
 
-function setStatus(state, text){
-  ui.statusText.textContent = text;
-  ui.statusDot.className = 'dot ' + ({
-    idle: 'dot-idle', connecting: 'dot-connecting', connected: 'dot-connected', error: 'dot-error'
-  }[state] || 'dot-idle');
+function setStatus(stateName,text){ ui.statusText.textContent=text; ui.statusDot.className='dot '+({idle:'dot-idle',connecting:'dot-connecting',connected:'dot-connected',error:'dot-error'}[stateName]||'dot-idle'); }
+function toggleSheet(open){ ui.settings.classList.toggle('open',open); }
+function setInCall(active){ ui.precall.classList.toggle('hidden',active); ui.call.classList.toggle('hidden',!active);
+  ui.muteBtn.disabled=ui.endBtn.disabled=ui.deafenBtn.disabled=ui.messageInput.disabled=ui.sendBtn.disabled=!active;
+  ui.chatToggle.setAttribute('aria-expanded', active?'true':'false'); if(active){ ui.chat.classList.remove('hidden'); } }
+function roomLinkFromId(id){ const u=new URL(location.href); u.searchParams.set('room',id); return u.toString(); }
+function getAudioConstraints(){ return { audio:{ deviceId:undefined, echoCancellation:ui.echo.checked, noiseSuppression:ui.noise.checked, autoGainControl:ui.agc.checked, channelCount:1 }, video:false }; }
+function updateTimer(){ if(!callStartTs) return; const s=Math.floor((Date.now()-callStartTs)/1000); ui.callTime.textContent=fmtDur(s); }
+
+/** Simple audio pipeline */
+let inputStream=null, destStream=null, micGainNode=null, outGain=restore('outGain',1);
+async function buildAudio(){
+  if(inputStream){ inputStream.getTracks().forEach(t=>t.stop()); inputStream=null; }
+  inputStream=await navigator.mediaDevices.getUserMedia(getAudioConstraints());
+  const ctx=new (window.AudioContext||window.webkitAudioContext)();
+  const src=ctx.createMediaStreamSource(inputStream);
+  micGainNode=ctx.createGain(); micGainNode.gain.value=restore('micGain',1);
+  const comp=ctx.createDynamicsCompressor();
+  const gv=restore('gate',0); comp.threshold.value=-60+gv*50; comp.ratio.value=20;
+  destStream=ctx.createMediaStreamDestination();
+  src.connect(micGainNode); micGainNode.connect(comp); comp.connect(destStream);
+  ui.remoteAudio.volume=outGain;
 }
 
-function toggleSheet(open){
-  ui.settings.classList.toggle('open', open);
-  ui.settings.setAttribute('aria-hidden', open ? 'false' : 'true');
-}
-
-function setInCall(active){
-  ui.precall.classList.toggle('hidden', active);
-  ui.call.classList.toggle('hidden', !active);
-  ui.muteBtn.disabled = !active;
-  ui.endBtn.disabled = !active;
-  ui.deafenBtn.disabled = !active;
-  ui.messageInput.disabled = !active;
-  ui.sendBtn.disabled = !active;
-  ui.chatToggle.setAttribute('aria-expanded', active ? 'true' : 'false');
-}
-
-function roomLinkFromId(id){
-  const url = new URL(window.location.href);
-  url.searchParams.set('room', id);
-  return url.toString();
-}
-
-function updateCallTimer(){
-  if(!callStartTs) return;
-  const s = Math.floor((Date.now() - callStartTs)/1000);
-  ui.callTime.textContent = formatDuration(s);
-}
-
-function getAudioConstraints(){
-  const deviceId = ui.micSelect.value || undefined;
-  return {
-    audio: {
-      deviceId: deviceId ? { exact: deviceId } : undefined,
-      echoCancellation: ui.echo.checked,
-      noiseSuppression: ui.noise.checked,
-      autoGainControl: ui.agc.checked,
-      channelCount: 1,
-    },
-    video: false
-  };
-}
-
-async function prepareDevices(){
-  try{
-    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    tmp.getTracks().forEach(t => t.stop());
-  }catch{}
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const mics = devices.filter(d => d.kind === 'audioinput');
-  ui.micSelect.innerHTML = '';
-  for(const d of mics){
-    const opt = document.createElement('option');
-    opt.value = d.deviceId;
-    opt.textContent = d.label || 'Микрофон';
-    ui.micSelect.appendChild(opt);
-  }
-}
-
-async function getLocalStream(){
-  if(localStream){ localStream.getTracks().forEach(t => t.stop()); }
-  localStream = await navigator.mediaDevices.getUserMedia(getAudioConstraints());
-  return localStream;
-}
-
-function tuneOpusInSDP(sdp){
-  const m = sdp.split('\r\n');
-  const mAudioIdx = m.findIndex(l => l.startsWith('m=audio'));
-  if(mAudioIdx === -1) return sdp;
-  const rtpmap = m.filter(l => l.startsWith('a=rtpmap:') && l.includes('opus/48000'));
-  if(!rtpmap.length) return sdp;
-  const pt = rtpmap[0].split(':')[1].split(' ')[0];
-  const parts = m[mAudioIdx].split(' ');
-  const header = parts.slice(0,3);
-  const pts = [pt, ...parts.slice(3).filter(x => x !== pt)];
-  m[mAudioIdx] = [...header, ...pts].join(' ');
-  const fmtpIdx = m.findIndex(l => l.startsWith('a=fmtp:' + pt));
-  const fmtpLine = 'a=fmtp:' + pt + ' minptime=10;useinbandfec=1;stereo=0;maxaveragebitrate=96000;ptime=20;usedtx=1';
-  if(fmtpIdx === -1){
-    const rtpmapIdx = m.findIndex(l => l.startsWith('a=rtpmap:' + pt));
-    m.splice(rtpmapIdx + 1, 0, fmtpLine);
-  }else{
-    m[fmtpIdx] = fmtpLine;
-  }
+/** ICE & RTC */
+function tuneOpus(sdp){
+  const m=sdp.split('\r\n'); const idx=m.findIndex(l=>l.startsWith('m=audio')); if(idx===-1) return sdp;
+  const rtp=m.filter(l=>l.startsWith('a=rtpmap:')&&l.includes('opus/48000')); if(!rtp.length) return sdp;
+  const pt=rtp[0].split(':')[1].split(' ')[0]; const parts=m[idx].split(' '); const head=parts.slice(0,3); const pts=[pt,...parts.slice(3).filter(x=>x!==pt)]; m[idx]=[...head,...pts].join(' ');
+  const br =(document.getElementById('modeSelect')?.value==='music')?128000:96000; const dtx=(br===96000)?1:0;
+  const fmtpIdx=m.findIndex(l=>l.startsWith('a=fmtp:'+pt)); const f='a=fmtp:'+pt+` minptime=10;useinbandfec=1;stereo=0;maxaveragebitrate=${br};ptime=20;usedtx=${dtx}`;
+  if(fmtpIdx===-1){ const rtpIdx=m.findIndex(l=>l.startsWith('a=rtpmap:'+pt)); m.splice(rtpIdx+1,0,f);} else { m[fmtpIdx]=f; }
   return m.join('\r\n');
 }
 
-async function tuneSender(sender){
-  try{
-    const params = sender.getParameters();
-    if(!params.encodings) params.encodings = [{}];
-    params.encodings[0].maxBitrate = 96000;
-    params.encodings[0].priority = 'high';
-    await sender.setParameters(params);
-  }catch{}
+function rtcConfig(){
+  return { iceServers: state.iceServers, iceCandidatePoolSize: 10, iceTransportPolicy: state.icePolicy };
 }
 
 function createPeer(){
-  pc = new RTCPeerConnection(rtcConfig);
-  remoteStream = new MediaStream();
-  ui.remoteAudio.srcObject = remoteStream;
-  pc.ontrack = (e) => {
-    for(const t of e.streams[0].getAudioTracks()){
-      remoteStream.addTrack(t);
+  if(pc){ try{ pc.close(); }catch{} }
+  pc=new RTCPeerConnection(rtcConfig());
+  pc.ontrack=e=>{ ui.remoteAudio.srcObject=e.streams[0]; };
+  pc.onconnectionstatechange=()=>{
+    const st=pc.connectionState;
+    if(st==='connected'){ onConnected(); }
+    else if(st==='connecting'){ setStatus('connecting','Подключение…'); }
+    else if(st==='failed'){ // авто‑переключение политики
+      if(state.icePolicy==='all'){ forceRelayAndRestart('Сбой: переключаюсь на TURN…'); }
+      else { setStatus('error','Сбой соединения'); }
     }
+    else if(st==='disconnected'){ setStatus('connecting','Пытаемся восстановить…'); /* дождёмся watchDog */ }
   };
-
-  pc.onconnectionstatechange = () => {
-    const st = pc.connectionState;
-    if(st === 'connected'){
-      onConnected();
-    }else if(st === 'connecting'){ setStatus('connecting', 'Подключение…'); }
-    else if(st === 'failed'){ setStatus('error', 'Сбой соединения'); }
-    else if(st === 'disconnected'){
-      setStatus('idle', 'Отключено');
-      if(callStartTs){ postSystem('call_ended', { by: user.id, reason: 'disconnected', duration: Math.round((Date.now()-callStartTs)/1000) }); stopCallUI(); }
-    }
+  pc.oniceconnectionstatechange = ()=>{
+    const s = pc.iceConnectionState;
+    if(s==='failed' && state.icePolicy==='all'){ forceRelayAndRestart('ICE fail → TURN'); }
   };
   return pc;
 }
 
-function onConnected(){
-  setStatus('connected', 'Подключено');
-  if(!connectedOnce){
-    connectedOnce = true;
-    startCallUI();
-    if(role === 'caller'){ postSystem('call_started', { by: user.id }); }
-  }
+async function forceRelayAndRestart(msg){
+  console.log(msg);
+  state.icePolicy='relay'; persist('forceRelay',true);
+  await restartIce();
 }
 
-async function createRoom(){
+async function restartIce(){
+  if(!pc) return;
   try{
-    setStatus('connecting', 'Создаём комнату…');
-    role = 'caller';
-    createPeer();
-    const stream = await getLocalStream();
-    const track = stream.getAudioTracks()[0];
-    pc.addTrack(track, stream);
-    const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
-    await tuneSender(sender);
-
-    roomRef = await addDoc(collection(db, 'rooms'), { createdAt: serverTimestamp() });
-    callerCandidatesCol = collection(roomRef, 'callerCandidates');
-    calleeCandidatesCol = collection(roomRef, 'calleeCandidates');
-    messagesCol = collection(roomRef, 'messages');
-    subscribeMessages();
-
-    pc.onicecandidate = async (event) => {
-      if(event.candidate){ await addDoc(callerCandidatesCol, event.candidate.toJSON()); }
-    };
-
-    let offer = await pc.createOffer({ offerToReceiveAudio: true });
-    offer.sdp = tuneOpusInSDP(offer.sdp);
+    const sender=pc.getSenders().find(s=>s.track&&s.track.kind==='audio');
+    let offer=await pc.createOffer({iceRestart:true, offerToReceiveAudio:true});
+    offer.sdp=tuneOpus(offer.sdp);
     await pc.setLocalDescription(offer);
-    await setDoc(roomRef, { offer: { type: offer.type, sdp: offer.sdp }, createdAt: serverTimestamp() }, { merge: true });
+    await updateDoc(roomRef,{ offer:{type:offer.type,sdp:offer.sdp, ts: Date.now()} });
+  }catch(e){ console.warn('restartIce', e); }
+}
 
-    const roomId = roomRef.id;
-    const link = roomLinkFromId(roomId);
-    showLink(link);
-
-    // === FIX 1: ждём answer от собеседника ===
-    onSnapshot(roomRef, async (snap) => {
-      const data = snap.data();
-      if(!pc.currentRemoteDescription && data?.answer){
-        const ans = new RTCSessionDescription(data.answer);
-        await pc.setRemoteDescription(ans);
-      }
-    });
-
-    // === FIX 2: принимаем ICE-кандидаты от callee ===
-    onSnapshot(calleeCandidatesCol, (snap) => {
-      snap.docChanges().forEach(async change => {
-        if(change.type === 'added'){
-          try{ await pc.addIceCandidate(change.doc.data()); }catch{}
+function startWatchdog(){
+  stopWatchdog();
+  state.watchdog = setInterval(async ()=>{
+    if(!pc) return;
+    try{
+      const stats = await pc.getStats(null);
+      let bytesIn = 0;
+      stats.forEach(report => {
+        if(report.type === 'inbound-rtp' && report.kind === 'audio'){
+          bytesIn += report.bytesReceived||0;
         }
       });
-    });
+      const now = Date.now();
+      if(state.lastBytesTime && now - state.lastBytesTime > 6000){
+        const delta = bytesIn - state.lastBytesIn;
+        if(delta < 500){ // менее ~500 байт за 6с — похоже на зависание
+          if(state.icePolicy==='all'){ await forceRelayAndRestart('Нет трафика → TURN'); }
+          else { await restartIce(); }
+        }
+      }
+      state.lastBytesIn = bytesIn;
+      state.lastBytesTime = now;
+    }catch{}
+  }, 3000);
+}
+function stopWatchdog(){ if(state.watchdog){ clearInterval(state.watchdog); state.watchdog=null; } }
 
-  }catch(e){
-    setStatus('error', 'Не удалось создать комнату');
-    console.error(e);
+function onConnected(){
+  setStatus('connected','Подключено');
+  if(!connectedOnce){
+    connectedOnce=true;
+    startCallUI();
   }
+  startWatchdog();
 }
 
-async function joinRoomFromInput(){
-  let val = (ui.roomInput.value || '').trim();
-  if(!val){ return; }
-  try{
-    if(val.startsWith('http')){
-      const u = new URL(val);
-      val = u.searchParams.get('room') || val;
-    }
-  }catch{}
-  await joinRoom(val);
+/** Firestore chat (минимально) */
+let msgCol;
+function subMessages(){ if(msgUnsub) msgUnsub(); const q=query(msgCol, orderBy('createdAt','asc'), limit(300)); msgUnsub=onSnapshot(q, sn=>{ ui.messages.innerHTML=''; sn.forEach(d=>renderMsg(d.data())); ui.messages.scrollTop=ui.messages.scrollHeight; }); }
+async function postSys(kind,extra={}){ try{ await addDoc(msgCol,{type:'system',kind,createdAt:serverTimestamp(),...extra}); }catch{} }
+async function sendText(){ const t=ui.messageInput.value.trim(); if(!t) return; ui.messageInput.value=''; try{ await addDoc(msgCol,{type:'text',text:t,from:user.id,name:user.name,createdAt:serverTimestamp()}); }catch{} }
+function renderMsg(m){ if(m.type==='system'){ const d=document.createElement('div'); d.className='msg-system'; d.textContent = m.kind==='call_ended' && m.duration ? `Звонок завершён (${fmtDur(m.duration)})` : (m.kind==='call_started'?'Звонок начался':'Система'); ui.messages.appendChild(d); return; } const b=document.createElement('div'); b.className='msg-bubble '+(m.from===user.id?'msg-right':''); b.textContent=m.text; ui.messages.appendChild(b); const meta=document.createElement('div'); meta.className='msg-meta'; meta.textContent=(m.from===user.id?'Ты':'Гость'); ui.messages.appendChild(meta); }
+
+/** flows */
+let currentOfferSdp='', currentAnswerSdp='';
+
+async function createRoom(){
+  role='caller';
+  usingRelay = ui.forceTurn.checked || ui.forceTurnSheet.checked;
+  state.icePolicy = usingRelay ? 'relay' : 'all';
+  persist('forceRelay', usingRelay);
+  setStatus('connecting','Создаём комнату…');
+
+  // ICE из Xirsys
+  state.iceServers = await getIceServers();
+
+  await buildAudio(); createPeer();
+  const track=destStream.getAudioTracks()[0]; pc.addTrack(track, destStream);
+
+  roomRef = await addDoc(collection(db,'rooms'), { createdAt: serverTimestamp() });
+  callerCandCol = collection(roomRef, 'callerCandidates'); calleeCandCol = collection(roomRef, 'calleeCandidates'); msgCol = collection(roomRef,'messages'); subMessages();
+  pc.onicecandidate=async(ev)=>{ if(ev.candidate){ await addDoc(callerCandCol, ev.candidate.toJSON()); } };
+
+  let offer=await pc.createOffer({offerToReceiveAudio:true}); offer.sdp=tuneOpus(offer.sdp); await pc.setLocalDescription(offer);
+  await setDoc(roomRef,{ offer:{type:offer.type,sdp:offer.sdp, ts: Date.now()} },{merge:true});
+  showLink(roomRef.id);
+
+  onSnapshot(roomRef, async (snap)=>{
+    const data=snap.data(); const ans=data?.answer;
+    if(ans && ans.sdp !== currentAnswerSdp){ currentAnswerSdp=ans.sdp; await pc.setRemoteDescription(new RTCSessionDescription(ans)); }
+  });
+  onSnapshot(collection(roomRef,'calleeCandidates'), (snap)=>{ snap.docChanges().forEach(async ch=>{ if(ch.type==='added'){ try{ await pc.addIceCandidate(ch.doc.data()); }catch{} } }); });
+
+  // авто‑фоллбек, если долго нет connected
+  setTimeout(async ()=>{ if(pc && pc.connectionState!=='connected' && state.icePolicy==='all'){ await forceRelayAndRestart('Таймаут → TURN'); } }, 9000);
+}
+
+async function joinByInput(){
+  let v=(ui.roomInput.value||'').trim();
+  if(!v) return;
+  try{ if(v.startsWith('http')){ const u=new URL(v); v=u.searchParams.get('room')||v; } }catch{}
+  await joinRoom(v);
 }
 
 async function joinRoom(roomId){
-  try{
-    setStatus('connecting', 'Подключаемся…');
-    role = 'callee';
-    createPeer();
-    const stream = await getLocalStream();
-    const track = stream.getAudioTracks()[0];
-    pc.addTrack(track, stream);
-    const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
-    await tuneSender(sender);
+  role='callee';
+  usingRelay = ui.forceTurn.checked || ui.forceTurnSheet.checked;
+  state.icePolicy = usingRelay ? 'relay' : 'all';
+  persist('forceRelay', usingRelay);
+  setStatus('connecting','Подключаемся…');
 
-    roomRef = doc(db, 'rooms', roomId);
-    const roomSnap = await getDoc(roomRef);
-    if(!roomSnap.exists()){ setStatus('error','Комната не найдена'); return; }
+  // ICE из Xirsys
+  state.iceServers = await getIceServers();
 
-    calleeCandidatesCol = collection(roomRef, 'calleeCandidates');
-    callerCandidatesCol = collection(roomRef, 'callerCandidates');
-    messagesCol = collection(roomRef, 'messages');
-    subscribeMessages();
+  await buildAudio(); createPeer();
+  const track=destStream.getAudioTracks()[0]; pc.addTrack(track, destStream);
+  roomRef = doc(db,'rooms',roomId);
+  const snap=await getDoc(roomRef); if(!snap.exists()){ setStatus('error','Комната не найдена'); return; }
+  calleeCandCol = collection(roomRef,'calleeCandidates'); callerCandCol = collection(roomRef,'callerCandidates'); msgCol = collection(roomRef,'messages'); subMessages();
+  pc.onicecandidate=async(ev)=>{ if(ev.candidate){ await addDoc(calleeCandCol, ev.candidate.toJSON()); } };
 
-    pc.onicecandidate = async (event) => {
-      if(event.candidate){ await addDoc(calleeCandidatesCol, event.candidate.toJSON()); }
-    };
+  onSnapshot(roomRef, async (rsnap)=>{
+    const data=rsnap.data(); const off=data?.offer; if(off && off.sdp !== currentOfferSdp){
+      currentOfferSdp=off.sdp; await pc.setRemoteDescription(new RTCSessionDescription(off)); let ans=await pc.createAnswer(); ans.sdp=tuneOpus(ans.sdp); await pc.setLocalDescription(ans); await updateDoc(roomRef,{ answer:{type:ans.type,sdp:ans.sdp, ts: Date.now()} });
+    }
+  });
+  onSnapshot(callerCandCol, (snap)=>{ snap.docChanges().forEach(async ch=>{ if(ch.type==='added'){ try{ await pc.addIceCandidate(ch.doc.data()); }catch{} } }); });
 
-    const offer = roomSnap.data().offer;
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    let answer = await pc.createAnswer();
-    answer.sdp = tuneOpusInSDP(answer.sdp);
-    await pc.setLocalDescription(answer);
-    await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp }, answeredAt: serverTimestamp() });
-
-    // === FIX 3: слушаем ICE от caller ===
-    onSnapshot(callerCandidatesCol, (snap) => {
-      snap.docChanges().forEach(async change => {
-        if(change.type === 'added'){
-          try{ await pc.addIceCandidate(change.doc.data()); }catch{}
-        }
-      });
-    });
-  }catch(e){
-    setStatus('error', 'Не удалось подключиться');
-    console.error(e);
-  }
+  setTimeout(async ()=>{ if(pc && pc.connectionState!=='connected' && state.icePolicy==='all'){ await forceRelayAndRestart('Таймаут → TURN'); } }, 9000);
 }
 
-function startCallUI(){
-  setInCall(true);
-  callStartTs = Date.now();
-  if(timerId) clearInterval(timerId);
-  timerId = setInterval(updateCallTimer, 1000);
-  updateCallTimer();
-}
-
-function stopCallUI(){
-  setInCall(false);
-  ui.callTime.textContent = '';
-  if(timerId) clearInterval(timerId);
-  callStartTs = 0; connectedOnce = false;
-  ui.chat.classList.add('hidden');
-  ui.chatToggle.setAttribute('aria-expanded','false');
-}
+function startCallUI(){ setInCall(true); callStartTs=Date.now(); if(timerId) clearInterval(timerId); timerId=setInterval(updateTimer,1000); updateTimer(); postSys('call_started'); }
+function stopCallUI(){ setInCall(false); ui.callTime.textContent=''; if(timerId) clearInterval(timerId); callStartTs=0; connectedOnce=false; ui.chat.classList.add('hidden'); ui.chatToggle.setAttribute('aria-expanded','false'); stopWatchdog(); }
 
 async function hangUp(){
-  try{
-    if(callStartTs){ postSystem('call_ended', { by: user.id, reason: 'hangup', duration: Math.round((Date.now()-callStartTs)/1000) }); }
-    stopCallUI();
-    setStatus('idle', 'Звонок завершён');
-    if(pc){ pc.getSenders().forEach(s => s.track && s.track.stop()); pc.close(); }
-    if(localStream){ localStream.getTracks().forEach(t => t.stop()); }
-    if(remoteStream){ remoteStream.getTracks().forEach(t => t.stop()); }
-    if(roomRef){
-      try{
-        await updateDoc(roomRef, { endedAt: serverTimestamp() });
-        const cols = ['callerCandidates', 'calleeCandidates'];
-        for(const c of cols){
-          const colRef = collection(roomRef, c);
-          const snaps = await getDocs(colRef);
-          await Promise.all(snaps.docs.map(d => deleteDoc(d.ref)));
-        }
-      }catch{}
-    }
-  }finally{
-    pc=null; role=null;
-  }
+  try{ if(callStartTs){ await postSys('call_ended',{duration:Math.round((Date.now()-callStartTs)/1000)}); } stopCallUI(); setStatus('idle','Звонок завершён'); if(pc){ pc.getSenders().forEach(s=>s.track&&s.track.stop()); pc.close(); } if(roomRef){ try{ await updateDoc(roomRef,{endedAt:serverTimestamp()}); const cols=['callerCandidates','calleeCandidates']; for(const c of cols){ const col=collection(roomRef,c); const sn=await getDocs(col); await Promise.all(sn.docs.map(d=>deleteDoc(d.ref))); } }catch{} } } finally{ pc=null; role=null; }
 }
 
-function showLink(link){
-  ui.linkBox.hidden = false;
-  ui.roomLink.textContent = link;
+function showLink(id){ ui.linkBox.hidden=false; ui.roomLink.textContent=roomLinkFromId(id); }
+async function copyLink(){ const l=ui.roomLink.textContent || roomLinkFromId(ui.roomInput.value.trim()||''); if(!l) return; try{ await navigator.clipboard.writeText(l);}catch{} }
+
+/** devices */
+async function prepareDevices(){
+  try{ const s=await navigator.mediaDevices.getUserMedia({audio:true,video:false}); s.getTracks().forEach(t=>t.stop()); }catch{}
+  const dev=await navigator.mediaDevices.enumerateDevices();
+  const mics=dev.filter(d=>d.kind==='audioinput'); const outs=dev.filter(d=>d.kind==='audiooutput');
+  ui.micSelect.innerHTML=''; mics.forEach(d=>{ const o=document.createElement('option'); o.value=d.deviceId; o.textContent=d.label||'Микрофон'; ui.micSelect.appendChild(o); });
+  if(typeof ui.remoteAudio.setSinkId!=='function'){ ui.outWrap.style.display='none'; } else { ui.outWrap.style.display=''; ui.outSelect.innerHTML=''; outs.forEach(d=>{ const o=document.createElement('option'); o.value=d.deviceId; o.textContent=d.label||'Динамики'; ui.outSelect.appendChild(o); }); }
 }
 
-async function copyLink(){
-  const link = ui.roomLink.textContent || roomLinkFromId(ui.roomInput.value.trim() || '');
-  if(!link) return;
-  try{ await navigator.clipboard.writeText(link); }catch{}
-}
-
-/** ===== Chat ===== */
-function subscribeMessages(){
-  if(!roomRef) return;
-  if(messagesUnsub) messagesUnsub();
-  const q = query(collection(roomRef, 'messages'), orderBy('createdAt','asc'), limit(200));
-  messagesUnsub = onSnapshot(q, (snap) => {
-    ui.messages.innerHTML = '';
-    snap.forEach(doc => renderMessage(doc.data()));
-    ui.messages.scrollTop = ui.messages.scrollHeight;
-  });
-}
-
-async function postSystem(kind, extra={}){
-  try{
-    await addDoc(collection(roomRef, 'messages'), { type: 'system', kind, createdAt: serverTimestamp(), ...extra });
-  }catch{}
-}
-
-async function sendText(){
-  const text = ui.messageInput.value.trim();
-  if(!text) return;
-  ui.messageInput.value='';
-  try{
-    await addDoc(collection(roomRef, 'messages'), {
-      type: 'text',
-      text,
-      from: user.id,
-      name: user.name,
-      createdAt: serverTimestamp()
-    });
-  }catch{}
-}
-
-function renderMessage(m){
-  if(m.type === 'system'){
-    let t = '';
-    if(m.kind === 'call_started'){ t = 'Звонок начался'; }
-    else if(m.kind === 'call_ended'){ t = 'Звонок завершён' + (m.duration ? ` (${formatDuration(m.duration)})` : ''); }
-    const div = document.createElement('div');
-    div.className = 'msg-system';
-    div.textContent = t;
-    ui.messages.appendChild(div);
-    return;
-  }
-  const wrap = document.createElement('div');
-  wrap.className = 'msg-bubble ' + (m.from === user.id ? 'msg-right' : '');
-  wrap.textContent = m.text;
-  ui.messages.appendChild(wrap);
-  const meta = document.createElement('div');
-  meta.className = 'msg-meta';
-  const who = m.from === user.id ? 'Ты' : (m.name || 'Гость');
-  meta.textContent = `${who} • ${m.createdAt?.toDate ? formatTime(m.createdAt.toDate()) : ''}`;
-  ui.messages.appendChild(meta);
-  ui.messages.scrollTop = ui.messages.scrollHeight;
-}
-
-function toggleChat(){
-  const isHidden = ui.chat.classList.contains('hidden');
-  ui.chat.classList.toggle('hidden', !isHidden);
-  ui.chatToggle.setAttribute('aria-expanded', String(isHidden));
-  if(isHidden){ ui.messageInput.focus(); }
-}
-
-/** ===== Refresh audio track on settings changes ===== */
-async function refreshAudioTrack(){
-  if(!pc) return;
-  const newStream = await getLocalStream();
-  const newTrack = newStream.getAudioTracks()[0];
-  const sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
-  if(sender && newTrack){ await sender.replaceTrack(newTrack); await tuneSender(sender); }
-}
-
-/** ===== Init ===== */
+/** init */
+let appInit=false;
 async function init(){
-  try{
-    app = initializeApp(firebaseConfig);
-    auth = getAuth(app);
-    await signInAnonymously(auth);
-    db = getFirestore(app);
-  }catch(e){
-    setStatus('error', 'Firebase не инициализирован');
-    console.error(e);
-  }
+  if(appInit) return; appInit=true;
+  try{ const a=initializeApp(firebaseConfig); app=a; auth=getAuth(a); await signInAnonymously(auth); db=getFirestore(a);}catch(e){ setStatus('error','Firebase не инициализирован'); console.error(e); }
+  ui.createBtn.addEventListener('click',createRoom); ui.joinBtn.addEventListener('click',joinByInput); ui.copyBtn.addEventListener('click',copyLink);
+  ui.openSettingsBtn.addEventListener('click',()=>toggleSheet(true)); ui.closeSettingsBtn.addEventListener('click',()=>toggleSheet(false));
+  ui.sendBtn.addEventListener('click',sendText); ui.messageInput.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); sendText(); }});
+  ui.chatToggle.addEventListener('click',()=>{ const h=ui.chat.classList.contains('hidden'); ui.chat.classList.toggle('hidden',!h); ui.chatToggle.setAttribute('aria-expanded', String(h)); });
+  ui.muteBtn.addEventListener('click',()=>{ isMuted=!isMuted; if(destStream){ destStream.getAudioTracks().forEach(t=>t.enabled=!isMuted);} ui.muteBtn.setAttribute('aria-pressed',String(isMuted)); });
+  ui.deafenBtn.addEventListener('click',()=>{ isDeaf=!isDeaf; ui.remoteAudio.muted=isDeaf; ui.deafenBtn.setAttribute('aria-pressed',String(isDeaf)); });
+  ui.endBtn.addEventListener('click',hangUp);
+  ui.micGain.addEventListener('input',()=>{ const v=parseFloat(ui.micGain.value); if(micGainNode){ micGainNode.gain.value=v; } persist('micGain',v); });
+  ui.outGain.addEventListener('input',()=>{ outGain=parseFloat(ui.outGain.value); ui.remoteAudio.volume=outGain; persist('outGain',outGain); });
+  ui.gate.addEventListener('input',()=>{ persist('gate', parseFloat(ui.gate.value)); buildAudio(); if(pc){ const tr=destStream.getAudioTracks()[0]; const s=pc.getSenders().find(s=>s.track&&s.track.kind==='audio'); if(s&&tr) s.replaceTrack(tr); } });
+  ui.forceTurn.checked = usingRelay; ui.forceTurnSheet.checked = usingRelay;
+  ui.forceTurn.addEventListener('change',()=>{ usingRelay=ui.forceTurn.checked; ui.forceTurnSheet.checked=usingRelay; state.icePolicy=usingRelay?'relay':'all'; persist('forceRelay',usingRelay); });
+  ui.forceTurnSheet.addEventListener('change',()=>{ usingRelay=ui.forceTurnSheet.checked; ui.forceTurn.checked=usingRelay; state.icePolicy=usingRelay?'relay':'all'; persist('forceRelay',usingRelay); });
 
-  ui.createBtn.addEventListener('click', createRoom);
-  ui.joinBtn.addEventListener('click', joinRoomFromInput);
-  ui.copyLinkBtn.addEventListener('click', copyLink);
-  ui.muteBtn.addEventListener('click', toggleMute);
-  ui.deafenBtn.addEventListener('click', toggleDeafen);
-  ui.endBtn.addEventListener('click', hangUp);
-  ui.openSettingsBtn.addEventListener('click', () => toggleSheet(true));
-  ui.closeSettingsBtn?.addEventListener('click', () => toggleSheet(false));
-  ui.micSelect.addEventListener('change', refreshAudioTrack);
-  [ui.echo, ui.noise, ui.agc].forEach(el => el.addEventListener('change', refreshAudioTrack));
-  ui.sendBtn.addEventListener('click', sendText);
-  ui.messageInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); sendText(); } });
-  ui.chatToggle.addEventListener('click', toggleChat);
-
-  // Автоподключение по ?room=
-  const params = new URLSearchParams(window.location.search);
-  const room = params.get('room');
-  if(room){ ui.roomInput.value = room; joinRoom(room); }
-
-  await prepareDevices();
-  setStatus('idle', 'Готов');
+  // auto join by ?room=
+  const params=new URLSearchParams(location.search); const room=params.get('room'); await prepareDevices(); await buildAudio();
+  if(room){ ui.roomInput.value=room; await joinRoom(room);} else { setStatus('idle','Готов'); }
 }
-
-/** ===== Controls ===== */
-async function toggleMute(){
-  isMuted = !isMuted;
-  if(localStream){
-    localStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
-  }
-  ui.muteBtn.setAttribute('aria-pressed', String(isMuted));
-  const micPath = document.getElementById('micPath');
-  if(isMuted){
-    micPath.setAttribute('d','M19 11a7 7 0 01-7 7v3h-2v-3a7 7 0 01-6-7h2a5 5 0 0010 0h3zM12 14a3 3 0 003-3V6a3 3 0 10-6 0v1.59l7.7 7.7-1.4 1.42L10 9.41V11a3 3 0 003 3z');
-  }else{
-    micPath.setAttribute('d','M12 14a3 3 0 003-3V6a3 3 0 10-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 0014 0h-2z');
-  }
-}
-
-function toggleDeafen(){
-  isDeaf = !isDeaf;
-  ui.remoteAudio.muted = isDeaf;
-  ui.deafenBtn.setAttribute('aria-pressed', String(isDeaf));
-}
-
 init();
